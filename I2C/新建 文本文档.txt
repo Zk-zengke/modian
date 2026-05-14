@@ -1,0 +1,275 @@
+
+  5. 写一个寄存器
+
+  流程：
+
+  START
+  Addr + W
+  ACK
+  RegAddr
+  ACK
+  Data
+  ACK
+  STOP
+
+  代码：
+
+  uint8_t I2C_WriteRegister(uint8_t dev_addr, uint8_t reg_addr, uint8_t data)
+  {
+      while (I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY));
+
+      I2C_GenerateSTART(I2C1, ENABLE);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT)) return 1;
+
+      I2C_Send7bitAddress(I2C1, dev_addr, I2C_Direction_Transmitter);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) return 2;
+
+      I2C_SendData(I2C1, reg_addr);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) return 3;
+
+      I2C_SendData(I2C1, data);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) return 4;
+
+      I2C_GenerateSTOP(I2C1, ENABLE);
+
+      return 0;
+  }
+
+  使用：
+
+  I2C_WriteRegister(0xD0, 0x6B, 0x00);
+
+  含义：
+
+  向 7 位地址 0x68 的设备，0x6B 寄存器写入 0x00
+
+  ———
+
+  6. 读一个寄存器
+
+  读寄存器不是直接读。通常要先写寄存器地址，再重新开始读。
+
+  流程：
+
+  START
+  Addr + W
+  ACK
+  RegAddr
+  ACK
+  RESTART
+  Addr + R
+  ACK
+  Data
+  NACK
+  STOP
+
+  代码：
+
+  uint8_t I2C_ReadRegister(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data)
+  {
+      while (I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY));
+
+      I2C_GenerateSTART(I2C1, ENABLE);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT)) return 1;
+
+      I2C_Send7bitAddress(I2C1, dev_addr, I2C_Direction_Transmitter);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) return 2;
+
+      I2C_SendData(I2C1, reg_addr);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) return 3;
+
+      I2C_GenerateSTART(I2C1, ENABLE);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT)) return 4;
+
+      I2C_Send7bitAddress(I2C1, dev_addr, I2C_Direction_Receiver);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED)) return 5;
+
+      I2C_AcknowledgeConfig(I2C1, DISABLE);
+
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED)) return 6;
+
+      *data = I2C_ReceiveData(I2C1);
+
+      I2C_GenerateSTOP(I2C1, ENABLE);
+
+      I2C_AcknowledgeConfig(I2C1, ENABLE);
+
+      return 0;
+  }
+
+  使用：
+
+  uint8_t id;
+
+  I2C_ReadRegister(0xD0, 0x75, &id);
+
+  ———
+
+  7. 连续读取多个寄存器
+
+  例如从 MPU6050 的 0x3B 开始连续读 6 个字节。
+
+  流程：
+
+  START
+  Addr + W
+  ACK
+  RegAddr
+  ACK
+  RESTART
+  Addr + R
+  ACK
+  Data0
+  ACK
+  Data1
+  ACK
+  ...
+  LastData
+  NACK
+  STOP
+
+  代码：
+
+  uint8_t I2C_ReadRegisters(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len)
+  {
+      uint8_t i;
+
+      if (len == 0)
+      {
+          return 1;
+      }
+
+      while (I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY));
+
+      I2C_GenerateSTART(I2C1, ENABLE);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT)) return 2;
+
+      I2C_Send7bitAddress(I2C1, dev_addr, I2C_Direction_Transmitter);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) return 3;
+
+      I2C_SendData(I2C1, reg_addr);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) return 4;
+
+      I2C_GenerateSTART(I2C1, ENABLE);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT)) return 5;
+
+      I2C_Send7bitAddress(I2C1, dev_addr, I2C_Direction_Receiver);
+      if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED)) return 6;
+
+      for (i = 0; i < len; i++)
+      {
+          if (i == len - 1)
+          {
+              I2C_AcknowledgeConfig(I2C1, DISABLE);
+              I2C_GenerateSTOP(I2C1, ENABLE);
+          }
+
+          if (I2C_WaitEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED)) return 7;
+
+          buf[i] = I2C_ReceiveData(I2C1);
+      }
+
+      I2C_AcknowledgeConfig(I2C1, ENABLE);
+
+      return 0;
+  }
+
+  ———
+
+  8. MPU6050 示例
+
+  #define MPU6050_ADDR          0xD0
+  #define MPU6050_WHO_AM_I      0x75
+  #define MPU6050_PWR_MGMT_1    0x6B
+  #define MPU6050_ACCEL_XOUT_H  0x3B
+
+  初始化：
+
+  uint8_t MPU6050_Init(void)
+  {
+      uint8_t id;
+
+      if (I2C_ReadRegister(MPU6050_ADDR, MPU6050_WHO_AM_I, &id))
+      {
+          return 1;
+      }
+
+      if (id != 0x68)
+      {
+          return 2;
+      }
+
+      if (I2C_WriteRegister(MPU6050_ADDR, MPU6050_PWR_MGMT_1, 0x00))
+      {
+          return 3;
+      }
+
+      return 0;
+  }
+
+  读取加速度：
+
+  uint8_t MPU6050_ReadAccel(int16_t *ax, int16_t *ay, int16_t *az)
+  {
+      uint8_t buf[6];
+
+      if (I2C_ReadRegisters(MPU6050_ADDR, MPU6050_ACCEL_XOUT_H, buf, 6))
+      {
+          return 1;
+      }
+
+      *ax = ((int16_t)buf[0] << 8) | buf[1];
+      *ay = ((int16_t)buf[2] << 8) | buf[3];
+      *az = ((int16_t)buf[4] << 8) | buf[5];
+
+      return 0;
+  }
+
+  ———
+
+  9. main 中使用
+
+
+      I2C1_Init_Config();
+
+      if (MPU6050_Init() == 0)
+          {
+              if (MPU6050_ReadAccel(&ax, &ay, &az) == 0)
+              {
+                  /* ax, ay, az 就是读取到的原始加速度数据 */
+              }
+          }
+      }
+      else
+      {
+          while (1)
+          {
+              /* 初始化失败 */
+          }
+      }
+  }
+
+  ———
+
+  10. 关键点总结
+
+  标准库写法里要特别注意：
+
+  1. GPIO 要配置成复用开漏 GPIO_Mode_AF_OD。
+  2. SCL/SDA 需要上拉电阻。
+  3. 设备地址通常传 7 位地址左移后的值，例如 0x68 << 1 = 0xD0。
+  4. 写寄存器：Addr+W -> RegAddr -> Data。
+  5. 读寄存器：Addr+W -> RegAddr -> ReSTART -> Addr+R -> Data。
+  6. 读最后一个字节前要关闭 ACK，然后发 STOP。
+
+  最容易混的地方是地址：
+
+  芯片 7 位地址：0x68
+  标准库传入地址：0xD0
+  读方向不是手动传 0xD1，而是通过 I2C_Direction_Receiver 指定
+
+  下一步建议你可以继续看：
+
+  1. 标准库 I2C 扫描地址代码
+  2. 标准库版 mpu6050.c / mpu6050.h 分文件写法
+  3. 不用硬件 I2C，GPIO 软件模拟 I2C 标准库代码

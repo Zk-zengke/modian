@@ -1,0 +1,246 @@
+从代码角度看，BRR 分频不是你手动一下一下分，而是：
+
+  你在代码里填目标波特率
+  库函数根据 USART 外设时钟算出分频值
+  库函数把分频值写入 USART_BRR 寄存器
+  USART 硬件根据 BRR 自动产生串口节拍
+
+  整个流程可以这样看。
+
+  ## 1. 你写的初始化代码
+
+  你通常只写：
+
+  USART_InitStructure.USART_BaudRate = 115200;
+  USART_Init(USART1, &USART_InitStructure);
+
+  你没有直接写 BRR，但是 USART_Init() 函数内部会帮你算。
+
+  ## 2. USART_Init 内部做了什么
+
+  标准外设库内部大概会做这几件事：
+
+  1. 判断你用的是 USART1 还是 USART2/3
+  2. 获取 USART 所在总线的时钟频率
+  3. 根据目标波特率计算 USARTDIV
+  4. 把 USARTDIV 拆成整数部分和小数部分
+  5. 写入 USARTx->BRR
+
+  伪代码大概是：
+
+  uint32_t pclk;
+  uint32_t usartdiv;
+  uint32_t mantissa;
+  uint32_t fraction;
+
+  pclk = 72000000;  // 假设 USART1 时钟是 72MHz
+
+  usartdiv = pclk / (16 * 115200);
+
+  mantissa = 整数部分;
+  fraction = 小数部分;
+
+  USART1->BRR = (mantissa << 4) | fraction;
+
+  ## 3. 以 72MHz 配 115200 为例
+
+  假设：
+
+  USART1 外设时钟 = 72MHz
+  目标波特率 = 115200
+  16 倍过采样
+
+  公式：
+
+  USARTDIV = USART 外设时钟 / (16 × 波特率)
+
+  代入：
+
+  USARTDIV = 72,000,000 / (16 × 115,200)
+           = 39.0625
+
+  所以要写入 BRR 的分频值是：
+
+  39.0625
+
+  但是寄存器不能直接存小数，所以拆开：
+
+  整数部分 = 39
+  小数部分 = 0.0625
+
+  16 倍过采样时，小数部分用低 4 位表示：
+
+  0.0625 × 16 = 1
+
+  所以：
+
+  Mantissa = 39
+  Fraction = 1
+
+  写入：
+
+  USART1->BRR = (39 << 4) | 1;
+
+  也就是：
+
+  BRR = 0x0271
+
+  ## 4. 标准外设库里更真实的算法
+
+  STM32 标准外设库为了避免浮点数，通常不用 39.0625 这种小数，而是用整数放大计算。
+
+  大概类似这样：
+
+  integerdivider = ((25 * apbclock) / (4 * baudrate));
+
+  tmpreg = (integerdivider / 100) << 4;
+
+  fractionaldivider = integerdivider - (100 * (tmpreg >> 4));
+
+  tmpreg |= ((((fractionaldivider * 16) + 50) / 100)) & 0x0F;
+
+  USARTx->BRR = tmpreg;
+
+  以 72MHz 和 115200 为例：
+
+  integerdivider = 25 × 72,000,000 / (4 × 115,200)
+                 ≈ 3906
+
+  这个 3906 实际表示：
+
+  39.06
+
+  然后：
+
+  整数部分 = 3906 / 100 = 39
+  小数部分 = 3906 - 3900 = 6
+
+  小数部分换算到 16 分频单位：
+
+  6 × 16 / 100 ≈ 1
+
+  所以最后还是：
+
+  BRR = (39 << 4) | 1
+
+  也就是：
+
+  BRR = 0x0271
+
+  ## 5. BRR 写进去后，硬件怎么分频
+
+  当 USART1->BRR = 0x0271 后，USART 硬件内部的波特率发生器就知道：
+
+  我要按照 39 + 1/16 这个分频值工作
+
+  可以粗略理解为内部有一个计数器：
+
+  USART 外设时钟每来一个脉冲
+  计数器加 1
+  计到指定分频值
+  产生一个采样节拍
+  再重新计数
+
+  对于 16 倍过采样来说：
+
+  USART 外设时钟
+      ↓ BRR 分频
+  产生 16 倍波特率采样时钟
+      ↓ 每 16 个采样节拍
+  得到 1 个真正的 bit 时间
+
+  所以最终：
+
+  72MHz
+      ↓ BRR 分频
+  得到 115200 bit/s 的串口节拍
+
+  ## 6. 发送时怎么用这个节拍
+
+  比如发送 'A'：
+
+  USART_SendData(USART1, 'A');
+
+  本质是：
+
+  USART1->DR = 'A';
+
+  然后 USART 硬件根据 BRR 产生的节拍发送：
+
+  起始位
+  bit0
+  bit1
+  bit2
+  bit3
+  bit4
+  bit5
+  bit6
+  bit7
+  停止位
+
+  如果波特率是 115200，每一位持续：
+
+  1 / 115200 ≈ 8.68 us
+
+  这个 8.68 us 就是 BRR 分频后决定的。
+
+  ## 7. 从完整代码流程看
+
+  一个 USART 初始化流程大概是：
+
+  // 1. 打开 GPIO 和 USART 时钟
+  RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+  RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
+
+  // 2. 配置 TX/RX 引脚
+  // PA9  -> USART1_TX
+  // PA10 -> USART1_RX
+
+  // 3. 配置 USART 参数
+  USART_InitTypeDef USART_InitStructure;
+
+  USART_InitStructure.USART_BaudRate = 115200;
+  USART_InitStructure.USART_WordLength = USART_WordLength_8b;
+  USART_InitStructure.USART_StopBits = USART_StopBits_1;
+  USART_InitStructure.USART_Parity = USART_Parity_No;
+  USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
+  USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+
+  // 4. 这一句内部会计算并写入 BRR
+  USART_Init(USART1, &USART_InitStructure);
+
+  // 5. 使能 USART
+  USART_Cmd(USART1, ENABLE);
+
+  关键点是：
+
+  USART_Init(USART1, &USART_InitStructure);
+
+  这一句内部会根据：
+
+  USART1 的时钟频率
+  USART_BaudRate = 115200
+
+  自动计算：
+
+  USART1->BRR
+
+  ## 8. 一句话总结
+
+  从代码角度看，BRR 分频流程就是：
+
+  USART_BaudRate = 115200
+          ↓
+  USART_Init() 获取 USART 外设时钟
+          ↓
+  计算 USARTDIV = 外设时钟 / (16 × 波特率)
+          ↓
+  拆成整数部分和小数部分
+          ↓
+  写入 USARTx->BRR
+          ↓
+  USART 硬件按 BRR 自动分频
+          ↓
+  TX/RX 按这个节拍发送和接收每一位
+
+  你写的是目标波特率，真正的分频动作由 BRR 寄存器和 USART 内部波特率发生器硬件完成。

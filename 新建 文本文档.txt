@@ -1,0 +1,101 @@
+W25Q64 是一颗 **SPI NOR Flash 存储芯片**，可以理解成 MCU 外接的一块“非易失性存储器”。断电后数据不会丢，常用来存放程序、图片、字库、参数、日志等数据。
+
+它的典型信息：
+
+| 项目 | 说明 |
+|---|---|
+| 容量 | 64 Mbit = 8 MByte |
+| 接口 | SPI / Dual SPI / Quad SPI |
+| 厂商 | Winbond 华邦 |
+| 擦除后数据 | `0xFF` |
+| 页大小 | 256 Byte |
+| 扇区大小 | 4 KB |
+| 常用地址范围 | `0x000000 ~ 0x7FFFFF` |
+
+通过 SPI 和 W25Q64 通信，一般用 4 根线：
+
+| SPI 信号 | MCU 方向 | W25Q64 引脚含义 |
+|---|---|---|
+| `SCLK` | 输出 | 时钟 `CLK` |
+| `MOSI` | 输出 | 数据输入 `DI` |
+| `MISO` | 输入 | 数据输出 `DO` |
+| `CS` | 输出 | 片选 `/CS`，低电平有效 |
+
+一次简单 SPI 通信流程：
+
+```text
+1. MCU 拉低 CS，选中 W25Q64
+2. MCU 通过 MOSI 发送命令
+3. MCU 继续产生 SCLK 时钟
+4. W25Q64 通过 MISO 返回数据
+5. MCU 拉高 CS，结束通信
+```
+
+最简单的例子是读取 W25Q64 的 JEDEC ID。命令是：
+
+```text
+0x9F
+```
+
+通信过程：
+
+```text
+CS 拉低
+发送 0x9F
+发送 0xFF，读取第 1 个返回字节
+发送 0xFF，读取第 2 个返回字节
+发送 0xFF，读取第 3 个返回字节
+CS 拉高
+```
+
+主机发送和从机返回大概是：
+
+```text
+MCU 发送：  9F   FF   FF   FF
+Flash返回： XX   EF   40   17
+```
+
+其中常见结果：
+
+```text
+EF 40 17
+```
+
+含义大致是：
+
+| 字节 | 含义 |
+|---|---|
+| `EF` | 厂商 ID，Winbond |
+| `40` | 存储类型 |
+| `17` | 容量标识，W25Q64 |
+
+一个简化的 SPI 读 ID 代码逻辑：
+
+```c
+uint8_t W25Q64_ReadID(void)
+{
+    uint8_t manufacturer;
+    uint8_t memoryType;
+    uint8_t capacity;
+
+    CS_LOW();
+
+    SPI_TransferByte(0x9F);
+
+    manufacturer = SPI_TransferByte(0xFF);
+    memoryType   = SPI_TransferByte(0xFF);
+    capacity     = SPI_TransferByte(0xFF);
+
+    CS_HIGH();
+
+    // manufacturer 应为 0xEF
+    // memoryType   应为 0x40
+    // capacity     应为 0x17
+}
+```
+
+`SPI_TransferByte()` 的意思是：发送 1 个字节，同时接收 1 个字节。SPI 是全双工通信，所以每发出一个 bit，也会同时读回一个 bit。
+
+核心记住这句话就行：
+
+> W25Q64 是一颗 8MB 的 SPI Flash；通过 SPI 通信时，MCU 拉低 CS，发送命令，再继续给时钟读取返回数据，最后拉高 CS。最简单的验证方式就是发送 `0x9F`，读回 `EF 40 17`。
